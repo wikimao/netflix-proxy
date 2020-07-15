@@ -9,9 +9,7 @@ author: anton@belodedenko.me
 from subprocess import Popen, PIPE
 from collections import defaultdict
 import datetime, traceback, sys, socket
-from settings import (MAX_AUTH_IP_COUNT, SQLITE_DB, DEBUG, VERSION,
-                      AUTO_AUTH, DEFAULT_PORT, FORM_INPUTS_HIDDEN,
-                      USERNAME_MAX_LEN, PASSWORD_MAX_LEN)
+from settings import *
 
 try:
     import web
@@ -66,7 +64,10 @@ def get_iface():
     rc = p.returncode
     web.debug('DEBUG: get_iface()=%s' % [rc, err, output])
     if rc == 0:
-        iface = output.rstrip()
+        try:
+            iface = output.rstrip().decode()
+        except:
+            iface = output.rstrip()
     else:
         iface = 'eth0'
         web.debug('WARNING: get_iface() failed, guessing iface=%s' % iface)
@@ -88,7 +89,10 @@ def get_server_iface_ip():
     rc = p.returncode
     web.debug('DEBUG: get_server_iface_ip()=%s' % [rc, err, output])
     if rc == 0:
-        ipaddr = output[0].rstrip()
+        try:
+            ipaddr = output[0].rstrip().decode()
+        except:
+            ipaddr = output[0].rstrip()
     else:
         ipaddr = web.ctx.env['SERVER_NAME']
         web.debug('WARNING: get_server_iface_ip() failed, guessing ipaddr=%s' % ipaddr)
@@ -102,7 +106,7 @@ def get_server_external_ip():
         reslvr.nameservers=[socket.gethostbyname('resolver1.opendns.com')]
         return str(reslvr.query('myip.opendns.com', 'A').rrset[0]).lower()
     
-    except Exception, e:
+    except Exception as e:
         web.debug('DEBUG: get_server_external_ip(): %s' % repr(e))
         return get_server_iface_ip()
 
@@ -113,7 +117,7 @@ def get_server_public_fqdn():
         ipaddr = reversename.from_address(get_server_external_ip())
         return str(reslvr.query(ipaddr, 'PTR')[0]).rstrip('.').lower()
     
-    except Exception, e:
+    except Exception as e:
         web.debug('DEBUG: get_server_public_fqdn(): %s' % repr(e))
         return ipaddr
     
@@ -133,7 +137,7 @@ def is_redirected():
     
 
 def csrf_token():
-    if not session.has_key('csrf_token'):
+    if not 'csrf_token' in session:
         from uuid import uuid4
         session.csrf_token = uuid4().hex
     return session.csrf_token
@@ -142,7 +146,7 @@ def csrf_token():
 def csrf_protected(f):
     def decorated(*args, **kwargs):
         inp = web.input()
-        if not (inp.has_key('csrf_token') and inp.csrf_token == session.pop('csrf_token', None)):
+        if not ('csrf_token' in inp and inp.csrf_token == session.pop('csrf_token', None)):
             raise web.HTTPError(
                 "400 Bad request",
                 {'content-type':'text/html'},
@@ -183,7 +187,7 @@ def validate_user(username,password):
             web.debug('login_failed: expired account user=%s' % user.username)
             return None
     
-    except IndexError, e:
+    except IndexError as e:
         web.debug('login_failed: not found user=%s' % username)
         return None
         
@@ -345,7 +349,7 @@ class Index:
                     if len(ipaddrs) == 0:
                         return web.seeother('/add')
                     return render.index(ipaddrs)
-            except Exception, e:
+            except Exception as e:
                 web.debug(traceback.print_exc())
                 raise web.seeother('/login')
             
@@ -377,7 +381,7 @@ class Login:
                 flash('success', 'welcome, please login to authorize %s' % ipaddr)                
                 return render.login(self.get_login_form())
             
-        except Exception, e:
+        except Exception as e:
             web.debug(traceback.print_exc())
             flash('success', 'welcome, please login to authorize %s' % ipaddr)                
             return render.login(self.get_login_form())
@@ -391,7 +395,7 @@ class Login:
             return render.login(login_form)
         username = login_form['username'].value
         password = login_form['password'].value
-	user = validate_user(username,password)
+        user = validate_user(username,password)
         if user:
             session.user = user
             web.debug(web.config.session_parameters)
@@ -416,38 +420,40 @@ class Logout:
 class AutoAdd:
 
     def GET(self):
-	try:
+        try:
             params = web.input(ip=get_client_public_ip())
-	    user = validate_user(params.username,params.password)
-            if user is None:
-                return 'Error: login'
+            user = validate_user(params.username,params.password)
+            if user is None: return 'Error: login'
 
-	    ipadr = params.ip
+            ipadr = params.ip
             is_ipv4 = web.net.validipaddr(ipadr)
             is_ipv6 = web.net.validip6addr(ipadr)
             if is_ipv4 == False and is_ipv6 == False:
                 return 'Error: IP not in right form'
 
             # userid = int(user.ID)
-	    userid = user.ID
-	    results = db.query('SELECT * FROM ipaddrs WHERE user_id=$user_id',
-                vars={'user_id': userid})
+            userid = user.ID
+            results = db.query(
+                'SELECT * FROM ipaddrs WHERE user_id=$user_id',
+                vars={
+                    'user_id': userid
+                }
+            )
 
-	    ipaddrs = [ip['ipaddr'] for ip in results]
-	    if ipadr in ipaddrs:
-		return 'Error: already authorized.'
+            ipaddrs = [ip['ipaddr'] for ip in results]
+            if ipadr in ipaddrs: return 'Error: already authorized.'
 
-	    db_result = db.insert('ipaddrs', user_id=userid, ipaddr=ipadr)
-	    web.debug('db_update: %s' % [db_result])
+            db_result = db.insert('ipaddrs', user_id=userid, ipaddr=ipadr)
+            web.debug('db_update: %s' % [db_result])
 
             if is_ipv4: result = run_ipt_cmd(ipadr, 'I')
             if is_ipv6: result = run_ipt6_cmd(ipadr, 'I')
             web.debug('iptables_update: %s' % [result])
-	    return 'OK'
-
-	except Exception, e:
-	    web.debug(traceback.print_exc())
+            return 'OK'
+        except Exception as e:
+            web.debug(traceback.print_exc())
             return user.ID
+
 
 class Add:
     
@@ -458,7 +464,7 @@ class Add:
             else:
                 raise web.seeother('/login')
 
-        except Exception, e:
+        except Exception as e:
             web.debug(traceback.print_exc())
             raise web.seeother('/login')
 
@@ -519,7 +525,7 @@ class Delete:
             else:
                 raise web.seeother('/login')                
 
-        except Exception, e:
+        except Exception as e:
             web.debug(traceback.print_exc())
             raise web.seeother('/login')
 
@@ -555,13 +561,13 @@ class DDNSIndex:
     ddns_add_form = web.form.Form(web.form.Textbox('domain', web.form.notnull))
     def GET(self):
         try:
-            if session.has_key('user'):
+            if 'user' in session:
                 domains = db.query('SELECT * FROM DDNS WHERE user_id=$user_id',
                        vars={'user_id': session.user['ID']})
                 return render.ddns(domains, DDNSIndex.ddns_add_form())
             else:
                 web.seeother('/login')
-        except Exception, e:
+        except Exception as e:
             flash('error', 'Please update the database schema. See README for details.')
             web.debug(traceback.print_exc())
             raise web.seeother('/')
